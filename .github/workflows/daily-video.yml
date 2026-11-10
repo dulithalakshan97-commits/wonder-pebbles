@@ -1,0 +1,98 @@
+name: Daily Wonder Pebbles video
+
+on:
+  schedule:
+    # 02:13 UTC = 07:43 in Sri Lanka, every day
+    - cron: "13 2 * * *"
+  workflow_dispatch:
+    inputs:
+      episode:
+        description: "Episode number (blank = today's episode)"
+        required: false
+        default: ""
+      privacy:
+        description: "YouTube privacy for the upload"
+        required: false
+        default: "private"
+        type: choice
+        options: [private, unlisted, public]
+      upload:
+        description: "Upload to YouTube (untick to only render a preview)"
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+
+concurrency:
+  group: daily-video
+  cancel-in-progress: false
+
+jobs:
+  make-video:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install system tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg espeak-ng
+
+      - name: Install Python packages
+        run: pip install -r requirements.txt
+
+      - name: Get the Fredoka font (SIL Open Font License)
+        run: |
+          mkdir -p assets/fonts
+          curl -sSLf -o assets/fonts/Fredoka.ttf "https://raw.githubusercontent.com/google/fonts/main/ofl/fredoka/Fredoka%5Bwdth%2Cwght%5D.ttf" || echo "font download failed, using fallback font"
+
+      - name: Render the episode
+        env:
+          EPISODE: ${{ github.event.inputs.episode }}
+        run: |
+          if [ -n "$EPISODE" ]; then python make_video.py --episode "$EPISODE" --out out; else python make_video.py --out out; fi
+          cat out/metadata.json
+
+      - name: Keep a preview copy (downloadable for 14 days)
+        uses: actions/upload-artifact@v4
+        with:
+          name: episode-${{ github.run_number }}
+          path: |
+            out/video.mp4
+            out/thumbnail.jpg
+            out/metadata.json
+          retention-days: 14
+
+      - name: Upload to YouTube
+        if: github.event_name == 'schedule' || github.event.inputs.upload == 'true'
+        env:
+          YT_CLIENT_ID: ${{ secrets.YT_CLIENT_ID }}
+          YT_CLIENT_SECRET: ${{ secrets.YT_CLIENT_SECRET }}
+          YT_REFRESH_TOKEN: ${{ secrets.YT_REFRESH_TOKEN }}
+          PRIVACY: ${{ github.event.inputs.privacy || 'private' }}
+        run: python upload.py out
+
+      # GitHub pauses scheduled workflows in repos with no activity for 60 days.
+      # Logging each episode keeps the schedule alive.
+      - name: Log episode
+        if: success() && (github.event_name == 'schedule' || github.event.inputs.upload == 'true')
+        run: |
+          python - <<'EOF'
+          import json, datetime
+          m = json.load(open("out/metadata.json"))
+          vid = open("out/video_id.txt").read().strip()
+          with open("episodes.csv", "a") as fh:
+              fh.write(f'{datetime.date.today()},{m["episode"]},{m["series"]},https://youtu.be/{vid},"{m["title"]}"\n')
+          EOF
+          git config user.name "wonder-pebbles-bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add episodes.csv
+          git commit -m "Log episode $(date -u +%F)" && git push || echo "nothing to commit"
