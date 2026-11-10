@@ -132,7 +132,7 @@ def main():
     ap.add_argument("--out", default="out")
     ap.add_argument("--preview", type=float, default=0, help="only render the first N seconds (for testing)")
     a = ap.parse_args()
-    epn = a.episode if a.episode is not None else int(os.environ.get("EPISODE", episode_for_today()))
+    epn = a.episode if a.episode is not None else int(os.environ.get("EPISODE") or episode_for_today())
     ep = build_episode(epn)
     os.makedirs(a.out, exist_ok=True)
     work = os.path.join(a.out, "work")
